@@ -1,0 +1,223 @@
+services:
+  web:
+    build: .
+    ports:
+      - "5001:8000"
+    env_file:
+      - .env
+    environment:
+      - PYTHONPATH=/app
+      - FLASK_APP=app/main.py
+      - FLASK_DEBUG=${FLASK_DEBUG:-0}
+      # AWS S3 Configuration
+      - AWS_S3_BUCKET_NAME=${AWS_S3_BUCKET_NAME}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - AWS_REGION=${AWS_REGION}
+      - AWS_PRESIGNED_URL_EXPIRY=${AWS_PRESIGNED_URL_EXPIRY}
+      # JWT Configuration
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY}
+      - JWT_ACCESS_TOKEN_EXPIRES=${JWT_ACCESS_TOKEN_EXPIRES}
+      # Master User
+      - MASTER_USERNAME=${MASTER_USERNAME}
+      - MASTER_PASSWORD=${MASTER_PASSWORD}
+      # Database Configuration
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB}
+      - POSTGRES_HOST=${POSTGRES_HOST}
+      - SQLALCHEMY_ECHO=${SQLALCHEMY_ECHO}
+      # Celery Configuration
+      - CELERY_BROKER_URL=${CELERY_BROKER_URL}
+      - CELERY_RESULT_BACKEND=${CELERY_RESULT_BACKEND}
+      - CELERY_WORKER_CONCURRENCY=${CELERY_WORKER_CONCURRENCY}
+      # Limits Configuration
+      - MAX_DOWNLOADS_PER_JOB=${MAX_DOWNLOADS_PER_JOB}
+      - MAX_DOWNLOAD_SIZE_MB=${MAX_DOWNLOAD_SIZE_MB}
+      - MAX_QUEUED_REQUESTS=${MAX_QUEUED_REQUESTS}
+      # Application
+      - ENV=${ENV}
+      - LOG_LEVEL=${LOG_LEVEL}
+      # UnoServer Configuration
+      - UNOSERVER_HOST=${UNOSERVER_HOST:-unoserver}
+      - UNOSERVER_PORT=${UNOSERVER_PORT:-2003}
+      - UNO_SERVER_TIMEOUT=${UNO_SERVER_TIMEOUT:-60}
+      # PDF Compression Configuration
+      - PDF_USE_LOSSLESS_COMPRESSION=${PDF_USE_LOSSLESS_COMPRESSION:-false}
+      - PDF_JPEG_QUALITY=${PDF_JPEG_QUALITY:-80}
+      - PDF_REDUCE_IMAGE_RESOLUTION=${PDF_REDUCE_IMAGE_RESOLUTION:-true}
+      - PDF_MAX_IMAGE_RESOLUTION=${PDF_MAX_IMAGE_RESOLUTION:-150}
+      # Template Cache Configuration
+      - TEMPLATE_CACHE_ENABLED=${TEMPLATE_CACHE_ENABLED:-true}
+      - TEMPLATE_CACHE_DIR=${TEMPLATE_CACHE_DIR:-/app/template_cache}
+      - TEMPLATE_CACHE_MAX_SIZE_MB=${TEMPLATE_CACHE_MAX_SIZE_MB:-500}
+      - TEMPLATE_CACHE_TTL_DAYS=${TEMPLATE_CACHE_TTL_DAYS:-7}
+    volumes:
+      - .:/app
+      - ./logs:/app/logs:rw
+      - template_cache:/app/template_cache
+    depends_on:
+      redis:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+      unoserver:
+        condition: service_healthy
+    networks:
+      - app-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  worker:
+    build: .
+    command: bash -c "PYTHONPATH=/app celery -A app.workers.celery_worker:celery worker --beat --loglevel=info --queues=high_priority,medium_priority,low_priority"
+    volumes:
+      - .:/app
+      - ./logs:/app/logs:rw
+      - template_cache:/app/template_cache
+    env_file:
+      - .env
+    environment:
+      - PYTHONPATH=/app
+      # AWS S3 Configuration
+      - AWS_S3_BUCKET_NAME=${AWS_S3_BUCKET_NAME}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - AWS_REGION=${AWS_REGION}
+      - AWS_PRESIGNED_URL_EXPIRY=${AWS_PRESIGNED_URL_EXPIRY}
+      # JWT Configuration
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY}
+      - JWT_ACCESS_TOKEN_EXPIRES=${JWT_ACCESS_TOKEN_EXPIRES}
+      # Master User
+      - MASTER_USERNAME=${MASTER_USERNAME}
+      - MASTER_PASSWORD=${MASTER_PASSWORD}
+      # Database Configuration
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB}
+      - POSTGRES_HOST=${POSTGRES_HOST}
+      - SQLALCHEMY_ECHO=${SQLALCHEMY_ECHO}
+      # Celery Configuration
+      - CELERY_BROKER_URL=${CELERY_BROKER_URL}
+      - CELERY_RESULT_BACKEND=${CELERY_RESULT_BACKEND}
+      - CELERY_WORKER_CONCURRENCY=${CELERY_WORKER_CONCURRENCY}
+      # Limits Configuration
+      - MAX_DOWNLOADS_PER_JOB=${MAX_DOWNLOADS_PER_JOB}
+      - MAX_DOWNLOAD_SIZE_MB=${MAX_DOWNLOAD_SIZE_MB}
+      - MAX_QUEUED_REQUESTS=${MAX_QUEUED_REQUESTS}
+      # Application
+      - ENV=${ENV}
+      - LOG_LEVEL=${LOG_LEVEL}
+      # UnoServer Configuration
+      - UNOSERVER_HOST=${UNOSERVER_HOST:-unoserver}
+      - UNOSERVER_PORT=${UNOSERVER_PORT:-2003}
+      - UNO_SERVER_TIMEOUT=${UNO_SERVER_TIMEOUT:-60}
+      # PDF Compression Configuration
+      - PDF_USE_LOSSLESS_COMPRESSION=${PDF_USE_LOSSLESS_COMPRESSION:-false}
+      - PDF_JPEG_QUALITY=${PDF_JPEG_QUALITY:-80}
+      - PDF_REDUCE_IMAGE_RESOLUTION=${PDF_REDUCE_IMAGE_RESOLUTION:-true}
+      - PDF_MAX_IMAGE_RESOLUTION=${PDF_MAX_IMAGE_RESOLUTION:-150}
+      # Template Cache Configuration
+      - TEMPLATE_CACHE_ENABLED=${TEMPLATE_CACHE_ENABLED:-true}
+      - TEMPLATE_CACHE_DIR=${TEMPLATE_CACHE_DIR:-/app/template_cache}
+      - TEMPLATE_CACHE_MAX_SIZE_MB=${TEMPLATE_CACHE_MAX_SIZE_MB:-500}
+      - TEMPLATE_CACHE_TTL_DAYS=${TEMPLATE_CACHE_TTL_DAYS:-7}
+    depends_on:
+      redis:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+      unoserver:
+        condition: service_healthy
+    networks:
+      - app-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  redis:
+    image: redis:alpine
+    command: redis-server --appendonly yes --appendfsync everysec
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    networks:
+      - app-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  vector:
+    image: timberio/vector:latest-alpine
+    container_name: vector
+    volumes:
+      - ./logs:/var/log:ro # Mount host /var/log to access app.log and api.log
+      - ./vector/vector.yaml:/etc/vector/vector.yaml:ro
+    environment:
+      # ClickHouse Configuration
+      - CLICKHOUSE_USER=${CLICKHOUSE_USER}
+      - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD}
+      - CLICKHOUSE_DATABASE=${CLICKHOUSE_DATABASE}
+      - CLICKHOUSE_ENDPOINT=${CLICKHOUSE_ENDPOINT}
+    depends_on:
+      - web
+    restart: unless-stopped
+
+  unoserver:
+    image: ghcr.io/unoconv/unoserver-docker:latest
+    container_name: pdf-toolkit-unoserver
+    expose:
+      - "2003"
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; s=socket.socket(); s.connect(('127.0.0.1', 2003)); s.close()"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  app-network:
+
+volumes:
+  postgres_data:
+  redis_data:
+  template_cache:

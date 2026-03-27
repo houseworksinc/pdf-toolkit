@@ -1,0 +1,75 @@
+sources:
+  app_logs:
+    type: file
+    include:
+      - "/var/log/app.log"
+      - "/var/log/app.log.*"
+    read_from: beginning
+    ignore_checkpoints: true
+    ignore_older_secs: 604800  # Ignore files older than 7 days
+    fingerprinting:
+      strategy: "device_and_inode"
+    max_line_bytes: 10485760  # 10MB max line size
+
+transforms:
+  parse_app_logs:
+    type: remap
+    inputs:
+      - app_logs
+    source: |
+      # Parse the JSON from the log line
+      parsed, err = parse_json(.message)
+      if err == null {
+        .timestamp = parsed.timestamp
+        .level = parsed.level
+        .name = parsed.name
+        .path = parsed.path
+        .module = parsed.module
+        .function = parsed.function
+        .message = parsed.message
+        .exception = parsed.exception
+        .extra = if is_object(parsed.extra) || is_array(parsed.extra) { encode_json(parsed.extra) } else { parsed.extra }
+
+        # Remove the original raw message and other extra fields
+        del(.file)
+        del(.host)
+        del(.source_type)
+        del(.extra_fields)
+      } else {
+        # If JSON parsing fails, create a basic log entry
+        .timestamp = now()
+        .level = "ERROR"
+        .name = "vector_parser"
+        .message = .message
+        .parse_error = err
+        .raw_message = .message
+
+        # Remove the original raw message and other extra fields
+        del(.file)
+        del(.host)
+        del(.source_type)
+        del(.extra_fields)
+      }
+
+sinks:
+  clickhouse_app:
+    type: clickhouse
+    inputs:
+      - parse_app_logs
+    endpoint: "${CLICKHOUSE_ENDPOINT}"
+    database: "pdf_generator"
+    table: "app"
+    auth:
+      strategy: "basic"
+      user: "${CLICKHOUSE_USER}"
+      password: "${CLICKHOUSE_PASSWORD}"
+    batch:
+      max_events: 1000        # Send when 1000 events accumulate
+      timeout_secs: 30        # Or send every 30 seconds, whichever comes first
+      max_bytes: 10485760     # Or when batch reaches 10MB
+    request:
+      retry_attempts: 3
+      retry_backoff_secs: 1
+      timeout_secs: 60
+
+
