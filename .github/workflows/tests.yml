@@ -1,0 +1,117 @@
+name: Tests
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: test_user
+          POSTGRES_PASSWORD: test_password
+          POSTGRES_DB: test_db
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+      redis:
+        image: redis:7-alpine
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 6379:6379
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Set up test environment
+        run: |
+          cat > .env << EOF
+          # Database Configuration
+          POSTGRES_USER=test_user
+          POSTGRES_PASSWORD=test_password
+          POSTGRES_DB=test_db
+          POSTGRES_HOST=localhost
+          POSTGRES_PORT=5432
+          SQLALCHEMY_ECHO=False
+
+          # Celery Configuration
+          CELERY_BROKER_URL=redis://localhost:6379/0
+          CELERY_RESULT_BACKEND=redis://localhost:6379/0
+
+          # JWT Configuration
+          JWT_SECRET_KEY=test-secret-key-for-ci
+          JWT_ACCESS_TOKEN_EXPIRES=3600
+
+          # AWS Configuration (mock values for testing)
+          AWS_S3_BUCKET_NAME=test-bucket
+          AWS_REGION=us-east-1
+          AWS_ACCESS_KEY_ID=test-key
+          AWS_SECRET_ACCESS_KEY=test-secret
+          AWS_PRESIGNED_URL_EXPIRY=3600
+
+          # Environment
+          ENV=test
+
+          # Flask Configuration
+          FLASK_APP=app/main.py
+          FLASK_DEBUG=0
+          PYTHONPATH=/home/runner/work/pdf-toolkit/pdf-toolkit
+
+          # Limits
+          MAX_DOWNLOADS_PER_JOB=50
+          MAX_DOWNLOAD_SIZE_MB=100
+          MAX_QUEUED_REQUESTS=1000
+          EOF
+
+      - name: Wait for services
+        run: |
+          echo "Waiting for PostgreSQL..."
+          for i in {1..30}; do
+            if nc -z localhost 5432; then
+              echo "PostgreSQL is up"
+              break
+            fi
+            echo "PostgreSQL is unavailable - sleeping"
+            sleep 1
+          done
+
+          echo "Waiting for Redis..."
+          for i in {1..30}; do
+            if nc -z localhost 6379; then
+              echo "Redis is up"
+              break
+            fi
+            echo "Redis is unavailable - sleeping"
+            sleep 1
+          done
+
+      - name: Run tests
+        run: |
+          python run_tests.py

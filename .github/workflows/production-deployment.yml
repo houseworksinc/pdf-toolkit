@@ -1,0 +1,140 @@
+name: Deploy to EC2
+
+# Required GitHub Secrets:
+# Infrastructure: EC2_HOST, EC2_USER, EC2_SSH_KEY
+# Celery: CELERY_BROKER_URL, CELERY_RESULT_BACKEND, CELERY_WORKER_CONCURRENCY
+# AWS S3: AWS_S3_BUCKET_NAME, AWS_REGION, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_PRESIGNED_URL_EXPIRY
+# JWT: JWT_SECRET_KEY, JWT_ACCESS_TOKEN_EXPIRES
+# Auth: MASTER_USERNAME, MASTER_PASSWORD
+# Database: POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_DB, SQLALCHEMY_ECHO
+# ClickHouse: CLICKHOUSE_USER, CLICKHOUSE_PASSWORD, CLICKHOUSE_DATABASE, CLICKHOUSE_ENDPOINT
+# Limits: MAX_DOWNLOADS_PER_JOB, MAX_DOWNLOAD_SIZE_MB, MAX_QUEUED_REQUESTS
+
+on:
+  workflow_run:
+    workflows: ["Tests"]
+    branches: [main]
+    types:
+      - completed
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Set up SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.EC2_SSH_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H ${{ secrets.EC2_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Deploy to EC2
+        run: |
+          cat > .env.tmp << EOF
+          # Celery Configuration
+          CELERY_BROKER_URL=${{ secrets.CELERY_BROKER_URL }}
+          CELERY_RESULT_BACKEND=${{ secrets.CELERY_RESULT_BACKEND }}
+          CELERY_WORKER_CONCURRENCY=${{ secrets.CELERY_WORKER_CONCURRENCY }}
+
+          # AWS S3 Configuration
+          AWS_S3_BUCKET_NAME=${{ secrets.AWS_S3_BUCKET_NAME }}
+          AWS_REGION=${{ secrets.AWS_REGION }}
+          AWS_ACCESS_KEY_ID=${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY=${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_PRESIGNED_URL_EXPIRY=${{ secrets.AWS_PRESIGNED_URL_EXPIRY }}
+
+          # Environment
+          ENV=production
+
+          # JWT Configuration
+          JWT_SECRET_KEY=${{ secrets.JWT_SECRET_KEY }}
+          JWT_ACCESS_TOKEN_EXPIRES=${{ secrets.JWT_ACCESS_TOKEN_EXPIRES }}
+
+          # Master User Credentials
+          MASTER_USERNAME=${{ secrets.MASTER_USERNAME }}
+          MASTER_PASSWORD=${{ secrets.MASTER_PASSWORD }}
+
+          # Database Configuration
+          POSTGRES_USER=${{ secrets.POSTGRES_USER }}
+          POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }}
+          POSTGRES_DB=${{ secrets.POSTGRES_DB }}
+          POSTGRES_HOST=postgres
+          SQLALCHEMY_ECHO=${{ secrets.SQLALCHEMY_ECHO }}
+
+          # ClickHouse Configuration
+          CLICKHOUSE_USER=${{ secrets.CLICKHOUSE_USER }}
+          CLICKHOUSE_PASSWORD=${{ secrets.CLICKHOUSE_PASSWORD }}
+          CLICKHOUSE_DATABASE=${{ secrets.CLICKHOUSE_DATABASE }}
+          CLICKHOUSE_ENDPOINT=${{ secrets.CLICKHOUSE_ENDPOINT }}
+
+          # Limits Configuration
+          MAX_DOWNLOADS_PER_JOB=${{ secrets.MAX_DOWNLOADS_PER_JOB }}
+          MAX_DOWNLOAD_SIZE_MB=${{ secrets.MAX_DOWNLOAD_SIZE_MB }}
+          MAX_QUEUED_REQUESTS=${{ secrets.MAX_QUEUED_REQUESTS }}
+
+          # Logging Configuration
+          LOG_LEVEL=INFO
+
+          # Flask Configuration
+          PYTHONPATH=/app
+          FLASK_APP=app/main.py
+          FLASK_DEBUG=0
+          EOF
+
+          ssh ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} << 'EOF'
+            set -e
+            cd pdf-toolkit
+            git pull origin main
+          EOF
+
+          # Upload .env AFTER git pull to ensure it's not overwritten
+          scp .env.tmp ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}:~/pdf-toolkit/.env
+          rm .env.tmp
+
+          ssh ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} << 'EOF'
+            set -e
+            cd pdf-toolkit
+
+            echo "✓ Environment file updated"
+            cat .env  # Debug: show .env contents (secrets will be masked in logs)
+
+            # Run database migrations before deployment
+            echo "Running database migrations..."
+            docker compose run --rm -e POSTGRES_HOST=postgres web python -m alembic upgrade head
+            echo "✓ Database migrations completed successfully"
+
+            OLD_WEB=$(docker compose ps -q web 2>/dev/null || echo "")
+            OLD_WORKER=$(docker compose ps -q worker 2>/dev/null || echo "")
+
+            docker compose up -d --no-recreate redis postgres
+            docker compose build --no-cache web worker
+            docker compose up -d --no-deps web worker
+            docker compose up -d --force-recreate vector
+
+            for i in {1..3}; do
+              sleep 5
+              NEW_WEB=$(docker compose ps -q web 2>/dev/null)
+              NEW_WORKER=$(docker compose ps -q worker 2>/dev/null)
+              [ -n "$NEW_WEB" ] && [ -n "$NEW_WORKER" ] && break
+            done
+
+            if [ -n "$NEW_WEB" ] && [ -n "$NEW_WORKER" ] && docker compose ps web worker | grep -q "Up"; then
+              echo "✓ Deployed (web: $NEW_WEB, worker: $NEW_WORKER)"
+              [ -n "$OLD_WEB" ] && [ "$OLD_WEB" != "$NEW_WEB" ] && docker rm -f "$OLD_WEB" 2>/dev/null || true
+              [ -n "$OLD_WORKER" ] && [ "$OLD_WORKER" != "$OLD_WORKER" ] && docker rm -f "$OLD_WORKER" 2>/dev/null || true
+              docker container prune -f && docker image prune -f && docker network prune -f
+              docker builder prune -f
+            else
+              echo "✗ Deployment failed"
+              docker compose ps -a
+              docker compose logs --tail=50 web worker
+              exit 1
+            fi
+          EOF
