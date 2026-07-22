@@ -41,7 +41,7 @@ python-docx==1.2.0
 redis==7.1.0
 requests==2.32.5
 s3transfer==0.16.0
-setuptools==80.9.0
+setuptools==83.0.0
 six==1.17.0
 SQLAlchemy==2.0.44
 typing_extensions==4.15.0
